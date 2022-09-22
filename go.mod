@@ -1,4 +1,4 @@
-module github.com/libdns/template
+module github.com/wujiyu115/libdynudns
 
 go 1.16
 
