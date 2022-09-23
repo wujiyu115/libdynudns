@@ -10,10 +10,12 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/libdns/libdns"
+	"go.uber.org/zap"
 )
 
 const (
@@ -57,10 +59,10 @@ func getDomain(zone string) string {
 	return strings.TrimSuffix(zone, ".")
 }
 
-func getDomainIdFromFQDN(apiKey string, ResolvedFQDN string) (string, string, error) {
+func getDomainIdFromFQDN(apiKey string, prxyUrl string, ResolvedFQDN string) (string, string, error) {
 	hostname := getDomain(ResolvedFQDN)
 	url := apiUrl + "/dns/getroot/" + hostname
-	response, err := callDnsApi(url, "GET", nil, apiKey)
+	response, err := callDnsApi(url, "GET", nil, apiKey, prxyUrl)
 	if err != nil {
 		return "", "", err
 	}
@@ -73,20 +75,20 @@ func getDomainIdFromFQDN(apiKey string, ResolvedFQDN string) (string, string, er
 	return fmt.Sprint(domainResponse.Id), domainResponse.Node, nil
 }
 
-func getRecordsForDomain(apiKey string, domainId string) ([]byte, error) {
+func getRecordsForDomain(apiKey string, prxyUrl string, domainId string) ([]byte, error) {
 	url := apiUrl + "/dns/" + domainId + "/record"
-	response, err := callDnsApi(url, "GET", nil, apiKey)
+	response, err := callDnsApi(url, "GET", nil, apiKey, prxyUrl)
 
 	return response, err
 }
 
-func getRecordsForDomainByZone(apiKey string, zone string) (DnsRecordResponse, string, error) {
+func getRecordsForDomainByZone(apiKey string, prxyUrl string, zone string) (DnsRecordResponse, string, error) {
 	dnsRecordsResponse := DnsRecordResponse{}
-	domainId, _, err := getDomainIdFromFQDN(apiKey, zone)
+	domainId, _, err := getDomainIdFromFQDN(apiKey, prxyUrl, zone)
 	if err != nil {
 		return dnsRecordsResponse, "", err
 	}
-	dnsRecords, err := getRecordsForDomain(apiKey, domainId)
+	dnsRecords, err := getRecordsForDomain(apiKey, prxyUrl, domainId)
 	if err != nil {
 		return dnsRecordsResponse, "", fmt.Errorf("unable to get DNS records %v", err)
 	}
@@ -94,8 +96,8 @@ func getRecordsForDomainByZone(apiKey string, zone string) (DnsRecordResponse, s
 	return dnsRecordsResponse, domainId, readErr
 }
 
-func getRecodsMaps(apiKey string, zone string) (map[string]map[string]int, string, error) {
-	dnsRecordsResponse, domainId, err := getRecordsForDomainByZone(apiKey, zone)
+func getRecodsMaps(apiKey string, prxyUrl string, zone string) (map[string]map[string]int, string, error) {
+	dnsRecordsResponse, domainId, err := getRecordsForDomainByZone(apiKey, prxyUrl, zone)
 	recordIDs := make(map[string]map[string]int)
 	for i := len(dnsRecordsResponse.DnsRecords) - 1; i >= 0; i-- {
 		record := dnsRecordsResponse.DnsRecords[i]
@@ -111,9 +113,9 @@ func getRecodsMaps(apiKey string, zone string) (map[string]map[string]int, strin
 	return recordIDs, domainId, err
 }
 
-func deleteRecord(apiKey string, domainId string, recordId int) (string, error) {
+func deleteRecord(apiKey string, prxyUrl string, domainId string, recordId int) (string, error) {
 	url := apiUrl + "/dns/" + domainId + "/record/" + fmt.Sprint(recordId)
-	response, err := callDnsApi(url, "DELETE", nil, apiKey)
+	response, err := callDnsApi(url, "DELETE", nil, apiKey, prxyUrl)
 	return string(response), err
 }
 
@@ -133,14 +135,14 @@ func getRecordReqBody(recordName string, recordType string, value string, ttl ti
 	return jsonBody, err
 }
 
-func addRecord(apiKey string, domainId string, recordName string, recordType string, value string, ttl time.Duration) {
+func addRecord(apiKey string, prxyUrl string, domainId string, recordName string, recordType string, value string, ttl time.Duration) {
 	jsonBody, err := getRecordReqBody(recordName, recordType, value, ttl)
 	if err != nil {
 		log.Println(err)
 		return
 	}
 	url := apiUrl + "/dns/" + domainId + "/record"
-	response, err := callDnsApi(url, "POST", bytes.NewBuffer(jsonBody), apiKey)
+	response, err := callDnsApi(url, "POST", bytes.NewBuffer(jsonBody), apiKey, prxyUrl)
 	if err != nil {
 		log.Println(err)
 		return
@@ -148,14 +150,14 @@ func addRecord(apiKey string, domainId string, recordName string, recordType str
 	fmt.Printf("Add  record result: %s", string(response))
 }
 
-func updteRecord(apiKey string, domainId string, recordId int, recordName string, recordType string, value string, ttl time.Duration) {
+func updteRecord(apiKey string, prxyUrl string, domainId string, recordId int, recordName string, recordType string, value string, ttl time.Duration) {
 	jsonBody, err := getRecordReqBody(recordName, recordType, value, ttl)
 	if err != nil {
 		log.Println(err)
 		return
 	}
 	url := apiUrl + "/dns/" + domainId + "/record/" + fmt.Sprint(recordId)
-	response, err := callDnsApi(url, "POST", bytes.NewBuffer(jsonBody), apiKey)
+	response, err := callDnsApi(url, "POST", bytes.NewBuffer(jsonBody), apiKey, prxyUrl)
 
 	if err != nil {
 		log.Println(err)
@@ -163,8 +165,8 @@ func updteRecord(apiKey string, domainId string, recordId int, recordName string
 	fmt.Printf("updteRecord record result: %s", string(response))
 }
 
-func callDnsApi(url string, method string, body io.Reader, apiKey string) ([]byte, error) {
-	req, err := http.NewRequest(method, url, body)
+func callDnsApi(apiUrl string, method string, body io.Reader, apiKey string, prxyUrl string) ([]byte, error) {
+	req, err := http.NewRequest(method, apiUrl, body)
 	if err != nil {
 		return []byte{}, fmt.Errorf("unable to execute request %v", err)
 	}
@@ -172,8 +174,19 @@ func callDnsApi(url string, method string, body io.Reader, apiKey string) ([]byt
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("API-Key", apiKey)
+
 	t := &http.Transport{
 		TLSHandshakeTimeout: 60 * time.Second,
+	}
+	// set proxy
+	if prxyUrl != "" {
+		log.Println("Do request with proxy", prxyUrl)
+		u, err := url.Parse(prxyUrl)
+		if err != nil {
+			log.Println("Failed to Do request")
+			return nil, err
+		}
+		t.Proxy = http.ProxyURL(u)
 	}
 	client := &http.Client{
 		Transport: t,
@@ -195,7 +208,7 @@ func callDnsApi(url string, method string, body io.Reader, apiKey string) ([]byt
 		return respBody, nil
 	}
 
-	text := "Error calling API status:" + resp.Status + " url: " + url + " method: " + method
+	text := "Error calling API status:" + resp.Status + " url: " + apiUrl + " method: " + method
 	log.Println(text)
 	return nil, errors.New(text)
 }
@@ -203,11 +216,14 @@ func callDnsApi(url string, method string, body io.Reader, apiKey string) ([]byt
 type Provider struct {
 	// struct tags on exported fields), for example:
 	APIToken string `json:"api_token,omitempty"`
+	ProxyUrl string `json:"proxy_url,omitempty"`
+	Logger   *zap.Logger
 }
 
 // GetRecords lists all the records in the zone.
 func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record, error) {
-	dnsRecordsResponse, _, err := getRecordsForDomainByZone(p.APIToken, zone)
+	p.Logger.Info("GetRecords", zap.String("zone", zone))
+	dnsRecordsResponse, _, err := getRecordsForDomainByZone(p.APIToken, p.ProxyUrl, zone)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get DNS records %v", err)
 	}
@@ -232,23 +248,27 @@ func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record
 
 // AppendRecords adds records to the zone. It returns the records that were added.
 func (p *Provider) AppendRecords(ctx context.Context, zone string, records []libdns.Record) ([]libdns.Record, error) {
-	log.Println("AppendRecords", zone, records)
+	p.Logger.Info("AppendRecords", zap.String("zone", zone))
+	for _, record := range records {
+		p.Logger.Info("AppendRecord.Record", zap.String("Type", record.Type), zap.String("Name", record.Name), zap.String("Value", record.Value))
+	}
 	var appendedRecords []libdns.Record
-	recordIDs, domainId, err := getRecodsMaps(p.APIToken, zone)
+	recordIDs, domainId, err := getRecodsMaps(p.APIToken, p.ProxyUrl, zone)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get DNS records %v", err)
 	}
 
 	for _, record := range records {
+		p.Logger.Info("AppendRecord.Record", zap.String("Type", record.Type), zap.String("Name", record.Name), zap.String("Value", record.Value))
 		_, exist := recordIDs[record.Type]
 		recordId := 0
 		if exist {
 			recordId = recordIDs[record.Type][record.Name]
 		}
 		if recordId != 0 {
-			updteRecord(p.APIToken, domainId, recordId, record.Name, record.Type, record.Value, record.TTL)
+			updteRecord(p.APIToken, p.ProxyUrl, domainId, recordId, record.Name, record.Type, record.Value, record.TTL)
 		} else {
-			addRecord(p.APIToken, domainId, record.Name, record.Type, record.Value, record.TTL)
+			addRecord(p.APIToken, p.ProxyUrl, domainId, record.Name, record.Type, record.Value, record.TTL)
 		}
 		if err != nil {
 			return nil, err
@@ -267,10 +287,10 @@ func (p *Provider) SetRecords(ctx context.Context, zone string, records []libdns
 
 // DeleteRecords deletes the records from the zone. It returns the records that were deleted.
 func (p *Provider) DeleteRecords(ctx context.Context, zone string, records []libdns.Record) ([]libdns.Record, error) {
-	log.Println("DeleteRecords", zone, records)
+	p.Logger.Info("DeleteRecords", zap.String("zone", zone))
 	var deleteRecords []libdns.Record
 
-	recordIDs, domainId, err := getRecodsMaps(p.APIToken, zone)
+	recordIDs, domainId, err := getRecodsMaps(p.APIToken, p.ProxyUrl, zone)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get DNS records %v", err)
 	}
@@ -288,7 +308,7 @@ func (p *Provider) DeleteRecords(ctx context.Context, zone string, records []lib
 		if !exist1 {
 			return nil, fmt.Errorf("unable to get DNS records %v", err)
 		}
-		_, err := deleteRecord(p.APIToken, domainId, recordId)
+		_, err := deleteRecord(p.APIToken, p.ProxyUrl, domainId, recordId)
 		if err != nil {
 			return nil, err
 		}
